@@ -1,0 +1,1 @@
+npm install && npm run build && npx vsce package

@@ -1,0 +1,12 @@
+node_modules/**
+../**
+src/**
+dist/test/**
+dist/**/*.map
+dist/*.vsix
+scripts/**
+.vscode/**
+.gitignore
+tsconfig.json
+package-lock.json
+*.vsix

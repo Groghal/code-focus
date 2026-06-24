@@ -1,0 +1,46 @@
+{
+  "name": "code-focus",
+  "displayName": "Code Focus",
+  "description": "VS Code extension that improves code readability for humans with a focused presenter view.",
+  "version": "0.1.39",
+  "private": true,
+  "publisher": "codefocus",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:codeFocus.showPanel"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codeFocus.showPanel",
+        "title": "Code Focus: Show Panel"
+      }
+    ]
+  },
+  "scripts": {
+    "prebuild": "node scripts/clean-dist.js",
+    "build": "tsc -p . && esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --sourcemap",
+    "build:vsix": "npm run build && node scripts/package-vsix.js",
+    "watch": "tsc -watch -p .",
+    "test": "npm run build && node --test dist/test/**/*.test.js",
+    "test:compiled": "node --test dist/test/**/*.test.js",
+    "check": "npm run build && npm test"
+  },
+  "dependencies": {
+    "ignore": "^7.0.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/vscode": "^1.70.0",
+    "@vscode/vsce": "^3.9.1",
+    "esbuild": "^0.27.2",
+    "typescript": "^5.5.4"
+  }
+}
