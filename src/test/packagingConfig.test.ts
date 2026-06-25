@@ -32,6 +32,9 @@ test('Code Focus package has no external umbrella package-facing coupling', () =
   const formerPublisherName = ['rel', 'ayx'].join('');
   const umbrellaProductName = ['source', 'replay'].join('');
   assert.equal(packageJson.publisher, 'codefocus');
+  assert.deepEqual(packageJson.repository, { type: 'git', url: 'https://github.com/Groghal/code-focus.git' });
+  assert.equal(packageJson.homepage, 'https://github.com/Groghal/code-focus');
+  assert.deepEqual(packageJson.bugs, { url: 'https://github.com/Groghal/code-focus/issues' });
   assert.doesNotMatch(packageFacingText, new RegExp(formerPublisherName, 'i'));
   assert.doesNotMatch(packageFacingText, new RegExp(umbrellaProductName, 'i'));
 });
@@ -39,7 +42,9 @@ test('Code Focus package has no external umbrella package-facing coupling', () =
 test('Code Focus package manifest fields map to implemented extension behavior', () => {
   assert.equal(packageJson.main, './dist/extension.js');
   assert.equal(packageJson.activationEvents[0], `onCommand:${packageJson.contributes.commands[0].command}`);
+  assert.equal(packageJson.activationEvents[1], `onCommand:${packageJson.contributes.commands[1].command}`);
   assert.match(extensionSource, /registerCommand\('codeFocus\.showPanel'/);
+  assert.match(extensionSource, /registerCommand\('codeFocus\.reloadFromActiveEditor'/);
 
   assert.equal(packageJson.contributes.configuration, undefined);
   assert.equal(extensionSource.includes('getConfiguration('), false);
@@ -64,6 +69,7 @@ test('Code Focus package manifest fields map to implemented extension behavior',
 
   assert.equal(packageJson.engines.vscode, '^1.70.0');
   assert.equal(packageJson.devDependencies['@types/vscode'], '^1.70.0');
+  assert.doesNotMatch(extensionSource, /findFiles\([\s\S]*,\s*1000\s*\)/);
   assert.deepEqual(Object.keys(packageJson.dependencies), ['ignore']);
   assert.match(projectFilesSource, /import ignore = require\('ignore'\)/);
   assert.match(packageJson.scripts.build, /tsc -p \./);
@@ -118,12 +124,19 @@ test('Code Focus VSIX job builds first and writes a versioned artifact without s
   assert.equal(packageJson.devDependencies['@vscode/vsce'], '^3.9.1');
 });
 
-test('Code Focus contributes only the Show Panel command', () => {
-  assert.deepEqual(packageJson.activationEvents, ['onCommand:codeFocus.showPanel']);
+test('Code Focus contributes only presenter and active-editor reload commands', () => {
+  assert.deepEqual(packageJson.activationEvents, [
+    'onCommand:codeFocus.showPanel',
+    'onCommand:codeFocus.reloadFromActiveEditor',
+  ]);
   assert.deepEqual(packageJson.contributes.commands, [
     {
       command: 'codeFocus.showPanel',
       title: 'Code Focus: Show Panel',
+    },
+    {
+      command: 'codeFocus.reloadFromActiveEditor',
+      title: 'Code Focus: Reload From Active Editor',
     },
   ]);
   assert.equal(packageJson.contributes.keybindings, undefined);

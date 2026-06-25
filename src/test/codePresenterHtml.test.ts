@@ -6,6 +6,7 @@ import { renderCodePresenterHtml, renderRows, selectRenderedLineWindow } from '.
 test('renders code in a controlled webview presenter with full path and line range header', () => {
   const html = renderCodePresenterHtml({
     fullPath: '/home/grog/projects/demo/src/index.ts',
+    activeRelativePath: 'src/index.ts',
     firstLine: 1,
     lastLine: 2,
     lines: [
@@ -16,7 +17,8 @@ test('renders code in a controlled webview presenter with full path and line ran
 
   assert.match(html, /Code Focus Presenter/);
   assert.match(html, /Source file and visible line range/);
-  assert.match(html, /\/home\/grog\/projects\/demo\/src\/index\.ts/);
+  assert.match(html, /\/home\/grog\/projects\/demo<\/span>/);
+  assert.match(html, /<div class="metadata-path">src\/index\.ts<\/div>/);
   assert.match(html, /shown lines: 1-2/);
   assert.match(html, /Rendered source code viewport/);
   assert.match(html, /const answer = 42;/);
@@ -25,6 +27,11 @@ test('renders code in a controlled webview presenter with full path and line ran
   assert.match(html, /--readable-code-font: "IBM Plex Mono", "DejaVu Sans Mono", "JetBrains Mono"/);
   assert.match(html, /font-family: var\(--readable-code-font\)/);
   assert.match(html, /font-size: clamp\(22px/);
+  assert.match(html, /grid-template-rows: 172px 1fr/);
+  assert.match(html, /grid-template-rows: 36px 24px 24px 24px 28px/);
+  assert.match(html, /align-content: start/);
+  assert.match(html, /grid-row: 2 \/ span 3/);
+  assert.match(html, /-webkit-line-clamp: 3/);
   assert.doesNotMatch(html, /line-number/);
   assert.doesNotMatch(html, />1<\/span>/);
   assert.doesNotMatch(html, />2<\/span>/);
@@ -202,12 +209,50 @@ test('renders a clickable, scrollable hierarchical project file tree with the ac
   assert.match(html, /overflow-y: auto/);
   assert.match(html, /data-file-path="package\.json"/);
   assert.match(html, /type="button" class="file-tree-file" data-file-path="src\/index\.ts"/);
+  assert.doesNotMatch(html, /title="src\/index\.ts"/);
   assert.match(html, /<div class="file-tree-directory"[^>]*>src<\/div>/);
   assert.match(html, /<div class="file-tree-directory"[^>]*>lib<\/div>/);
   assert.match(html, /package\.json/);
-  assert.match(html, /src\/index\.ts/);
-  assert.match(html, /src\/lib\/reader\.ts/);
+  assert.match(html, /data-file-path="src\/index\.ts"[^>]*>index\.ts<\/button>/);
+  assert.match(html, /data-file-path="src\/lib\/reader\.ts"[^>]*>reader\.ts<\/button>/);
   assert.match(html, /aria-current="true">index\.ts/);
+});
+
+test('reserves stable OCR header rows for the opened root and long relative file path', () => {
+  const longPath = 'src/features/super-long-component-name-that-used-to-be-cropped-in-the-presenter-view.tsx';
+  const html = renderCodePresenterHtml({
+    fullPath: `/home/grog/projects/demo/${longPath}`,
+    activeRelativePath: longPath,
+    firstLine: 1,
+    lastLine: 1,
+    lines: [{ number: 1, text: 'export const answer = 42;' }],
+    projectFiles: [longPath],
+  });
+
+  assert.match(html, /grid-template-rows: 36px 24px 24px 24px 28px/);
+  assert.match(html, /align-content: start/);
+  assert.match(html, /Opened folder:<\/span><span class="metadata-folder">\/home\/grog\/projects\/demo<\/span>/);
+  assert.match(html, new RegExp(`<div class="metadata-path">${longPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}<\\/div>`));
+  assert.doesNotMatch(html, new RegExp(`title="${longPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
+  assert.match(html, /data-file-path="src\/features\/super-long-component-name-that-used-to-be-cropped-in-the-presenter-view\.tsx"[^>]*>super-long-component-name-that-used-to-be-cropped-in-the-presenter-view\.tsx<\/button>/);
+});
+
+test('reveals the active file when the presenter active path changes while preserving same-file refresh scroll', () => {
+  const html = renderCodePresenterHtml({
+    fullPath: '/home/grog/projects/demo/src/next.ts',
+    activeRelativePath: 'src/next.ts',
+    firstLine: 1,
+    lastLine: 19,
+    lines: [{ number: 1, text: 'export const next = true;' }],
+    projectFiles: ['package.json', 'src/index.ts', 'src/next.ts'],
+  });
+
+  assert.match(html, /let presenterState = vscode\?\.getState\?\.\(\) \|\| \{\}/);
+  assert.match(html, /const activeRelativePath = activeFileButton\?\.dataset\.filePath \|\| ''/);
+  assert.match(html, /const activeFileChanged = Boolean\(activeRelativePath && presenterState\.activeRelativePath !== activeRelativePath\)/);
+  assert.match(html, /!presenterState\.revealActiveFile && !activeFileChanged/);
+  assert.match(html, /fileTree\.scrollTop = presenterState\.fileTreeScrollTop/);
+  assert.match(html, /activeFileButton\?\.scrollIntoView/);
 });
 
 test('sorts presenter file tree deterministically before rendering', () => {
@@ -261,7 +306,7 @@ test('allows held Space repeats to reach the host cooldown gate', () => {
   assert.doesNotMatch(html, /PAGE_REPEAT_DELAY_MS/);
   assert.doesNotMatch(html, /lastPageScrollAt/);
   assert.doesNotMatch(html, /if \(event\.repeat\) \{/);
-  assert.match(html, /event\.preventDefault\(\);\n\s*vscode\?\.postMessage\(\{ type: 'pageScroll', direction: event\.shiftKey \? 'up' : 'down' \}\)/);
+  assert.match(html, /event\.preventDefault\(\);[\s\S]*savePresenterState\(\{[\s\S]*revealActiveFile: true[\s\S]*vscode\?\.postMessage\(\{ type: 'pageScroll', direction: event\.shiftKey \? 'up' : 'down' \}\)/);
 });
 
 test('reports measured presenter viewport line and wrap capacity back to the extension host', () => {

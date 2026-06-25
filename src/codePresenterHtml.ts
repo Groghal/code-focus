@@ -43,9 +43,30 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function splitDisplayPath(fullPath: string, activeRelativePath: string): { openedFolder: string; openedFile: string } {
+  const normalized = fullPath.replace(/\\/g, '/');
+  const relative = activeRelativePath.replace(/\\/g, '/');
+  if (relative && normalized.endsWith(`/${relative}`)) {
+    return {
+      openedFolder: normalized.slice(0, normalized.length - relative.length - 1) || '/',
+      openedFile: relative,
+    };
+  }
+  const lastSlash = normalized.lastIndexOf('/');
+  if (lastSlash < 0) {
+    return { openedFolder: '.', openedFile: normalized };
+  }
+  return {
+    openedFolder: normalized.slice(0, lastSlash) || '/',
+    openedFile: normalized.slice(lastSlash + 1) || normalized,
+  };
+}
+
 export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
-  const fullPath = escapeHtml(input.fullPath);
   const activeRelativePath = input.activeRelativePath ?? '';
+  const displayPath = splitDisplayPath(input.fullPath, activeRelativePath);
+  const openedFolder = escapeHtml(displayPath.openedFolder);
+  const openedFile = escapeHtml(displayPath.openedFile);
   const lineRange = `${input.firstLine}-${input.lastLine}`;
   const rows = renderRows(input.lines, input.wrapColumn ?? DEFAULT_WRAP_COLUMN);
   const fileTree = renderProjectFileTree(input.projectFiles ?? [], activeRelativePath);
@@ -95,37 +116,88 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
       width: 100vw;
       height: 100vh;
       display: grid;
-      grid-template-rows: minmax(104px, 12vh) 1fr;
+      grid-template-rows: 172px 1fr;
       grid-template-columns: minmax(260px, 18vw) 1fr;
       background: var(--page-bg);
     }
 
     .metadata-strip {
-      display: block;
+      display: grid;
       grid-column: 1 / -1;
-      padding: 16px 28px;
+      align-content: start;
+      grid-template-rows: 36px 24px 24px 24px 28px;
+      padding: 10px 28px 12px;
       background: var(--metadata-bg);
       border-bottom: 4px solid var(--border);
       color: var(--metadata-fg);
+      overflow: hidden;
     }
 
-    .metadata-path {
-      font: 700 clamp(22px, 2.2vw, 40px)/1.15 var(--readable-code-font);
+    .metadata-strip > div {
+      display: contents;
+    }
+
+    .metadata-opened-folder {
+      align-items: center;
+      color: var(--muted);
+      display: flex;
+      flex-wrap: nowrap;
+      gap: 0.65ch;
+      font-family: var(--readable-code-font);
+      grid-row: 1;
+      line-height: 36px;
+      min-width: 0;
+      overflow: hidden;
       white-space: nowrap;
+    }
+
+    .metadata-folder-label {
+      font: 800 clamp(14px, 1.05vw, 19px)/1.1 Arial, Helvetica, sans-serif;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .metadata-folder,
+    .metadata-path {
+      font-family: var(--readable-code-font);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      white-space: normal;
+    }
+
+    .metadata-folder {
+      font-size: clamp(18px, 1.35vw, 26px);
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
+    .metadata-path {
+      color: var(--metadata-fg);
+      display: -webkit-box;
+      font-size: clamp(17px, 1.35vw, 24px);
+      grid-row: 2 / span 3;
+      line-height: 24px;
+      margin-top: 0;
+      max-height: 72px;
+      overflow: hidden;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+    }
+
     .metadata-lines {
-      margin-top: 8px;
+      align-self: end;
+      grid-row: 5;
+      margin-top: 0;
       color: var(--muted);
-      font: 700 clamp(16px, 1.35vw, 26px)/1.2 var(--readable-code-font);
+      font: 700 clamp(14px, 1.1vw, 20px)/1.15 var(--readable-code-font);
     }
 
 
     .file-tree {
       overflow-y: auto;
-      overflow-x: hidden;
+      overflow-x: auto;
       border-right: 4px solid var(--border);
       background: #f8fafc;
       padding: 18px 14px;
@@ -148,13 +220,15 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
 
     .file-tree-directory,
     .file-tree-file {
-      overflow: hidden;
       color: #334155;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      overflow-wrap: anywhere;
+      word-break: normal;
     }
 
     .file-tree-directory {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       color: #64748b;
       margin-top: 6px;
     }
@@ -169,6 +243,7 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
       font: inherit;
       padding: 3px 6px;
       text-align: left;
+      white-space: normal;
       width: 100%;
     }
 
@@ -242,7 +317,8 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
   <main class="presenter-frame">
     <section class="metadata-strip" aria-label="Source file and visible line range">
       <div>
-        <div class="metadata-path">${fullPath}</div>
+        <div class="metadata-opened-folder"><span class="metadata-folder-label">Opened folder:</span><span class="metadata-folder">${openedFolder}</span></div>
+        <div class="metadata-path">${openedFile}</div>
         <div class="metadata-lines">shown lines: ${lineRange}</div>
       </div>
     </section>
@@ -261,6 +337,11 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
   <script>
     (() => {
       const vscode = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : undefined;
+      let presenterState = vscode?.getState?.() || {};
+      const savePresenterState = (patch) => {
+        presenterState = { ...presenterState, ...patch };
+        vscode?.setState?.(presenterState);
+      };
       const preventManualScroll = (event) => {
         if (event.target.closest('.file-tree')) {
           return;
@@ -310,14 +391,30 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
       window.addEventListener('touchmove', preventManualScroll, { passive: false });
       window.addEventListener('resize', () => requestAnimationFrame(reportViewportMetrics));
       requestAnimationFrame(reportViewportMetrics);
+      const fileTree = document.querySelector('.file-tree');
+      const activeFileButton = document.querySelector('.file-tree-file[aria-current="true"]');
+      const activeRelativePath = activeFileButton?.dataset.filePath || '';
+      fileTree?.addEventListener('scroll', () => {
+        savePresenterState({ fileTreeScrollTop: fileTree.scrollTop, activeRelativePath, revealActiveFile: false });
+      });
       requestAnimationFrame(() => {
-        document.querySelector('.file-tree-file[aria-current="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        if (!fileTree) {
+          return;
+        }
+        const activeFileChanged = Boolean(activeRelativePath && presenterState.activeRelativePath !== activeRelativePath);
+        if (typeof presenterState.fileTreeScrollTop === 'number' && !presenterState.revealActiveFile && !activeFileChanged) {
+          fileTree.scrollTop = presenterState.fileTreeScrollTop;
+          return;
+        }
+        activeFileButton?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        savePresenterState({ fileTreeScrollTop: fileTree.scrollTop, activeRelativePath, revealActiveFile: false });
       });
       window.addEventListener('keydown', (event) => {
         if (event.code !== 'Space') {
           return;
         }
         event.preventDefault();
+        savePresenterState({ fileTreeScrollTop: fileTree?.scrollTop || 0, activeRelativePath, revealActiveFile: true });
         vscode?.postMessage({ type: 'pageScroll', direction: event.shiftKey ? 'up' : 'down' });
       });
       document.querySelector('.file-tree')?.addEventListener('click', (event) => {
@@ -325,6 +422,7 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
         if (!fileButton) {
           return;
         }
+        savePresenterState({ fileTreeScrollTop: fileTree?.scrollTop || 0, activeRelativePath, revealActiveFile: true });
         vscode?.postMessage({ type: 'openFile', path: fileButton.dataset.filePath });
       });
     })();

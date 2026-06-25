@@ -26,14 +26,17 @@ export function activate(context: vscode.ExtensionContext): void {
   rememberTextEditor(vscode.window.activeTextEditor);
   context.subscriptions.push(
     vscode.commands.registerCommand('codeFocus.showPanel', () => showPanel(context)),
+    vscode.commands.registerCommand('codeFocus.reloadFromActiveEditor', () => reloadFromActiveEditor(context)),
     vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (editor?.document.uri.scheme === 'file') {
+        void presentTextEditor(context, editor, { showWarning: false });
+        return;
+      }
       rememberTextEditor(editor);
       scheduleRefresh(context);
     }),
     vscode.window.onDidChangeTextEditorVisibleRanges((event) => {
-      rememberTextEditor(event.textEditor);
-      clearRefreshTimer();
-      void refreshPanel(context);
+      void presentTextEditor(context, event.textEditor, { showWarning: false });
     }),
     vscode.workspace.onDidChangeTextDocument(() => scheduleRefresh(context)),
   );
@@ -44,7 +47,7 @@ export function deactivate(): void {
 }
 
 async function showPanel(context: vscode.ExtensionContext): Promise<void> {
-  rememberTextEditor(vscode.window.activeTextEditor);
+  await presentTextEditor(context, vscode.window.activeTextEditor, { showWarning: false });
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       'codeFocusPresenterPanel',
@@ -72,6 +75,35 @@ async function showPanel(context: vscode.ExtensionContext): Promise<void> {
 
   await refreshPanel(context);
   vscode.window.showInformationMessage('Code Focus presenter started. Use this webview for a focused human-readable code view.');
+}
+
+async function reloadFromActiveEditor(context: vscode.ExtensionContext): Promise<void> {
+  const loaded = await presentTextEditor(context, vscode.window.activeTextEditor, { showWarning: true });
+  if (loaded && !panel) {
+    await showPanel(context);
+  }
+}
+
+async function presentTextEditor(
+  context: vscode.ExtensionContext,
+  editor: vscode.TextEditor | undefined,
+  options: { showWarning: boolean },
+): Promise<boolean> {
+  if (!editor || editor.document.uri.scheme !== 'file') {
+    if (options.showWarning) {
+      vscode.window.showWarningMessage('Code Focus: open a text file before reloading from the active editor.');
+    }
+    return false;
+  }
+
+  lastTextEditor = editor;
+  presentedDocument = editor.document;
+  presentedWorkspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+  presenterTopLine = getEditorTopLine(editor);
+  presenterVisibleLineCount = getEditorVisibleLineCount(editor);
+  clearRefreshTimer();
+  await refreshPanel(context);
+  return true;
 }
 
 function closePanel(): void {
@@ -327,7 +359,6 @@ async function buildProjectFileTree(): Promise<string[]> {
   const files = await vscode.workspace.findFiles(
     new vscode.RelativePattern(workspaceFolder, '**/*'),
     new vscode.RelativePattern(workspaceFolder, '**/{.git,node_modules,.venv,venv,dist,out,coverage,.next}/**'),
-    1000,
   );
   const relativeFiles = files.map((uri) => normalizeRelativePath(uri.fsPath, workspaceFolder.uri.fsPath));
   const gitignoreText = await readWorkspaceGitignore(workspaceFolder);

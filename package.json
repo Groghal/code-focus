@@ -2,10 +2,18 @@
   "name": "code-focus",
   "displayName": "Code Focus",
   "description": "VS Code extension that improves code readability for humans with a focused presenter view.",
-  "version": "0.1.39",
+  "version": "0.1.43",
   "private": true,
   "publisher": "codefocus",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Groghal/code-focus.git"
+  },
+  "homepage": "https://github.com/Groghal/code-focus",
+  "bugs": {
+    "url": "https://github.com/Groghal/code-focus/issues"
+  },
   "engines": {
     "vscode": "^1.70.0"
   },
@@ -13,7 +21,8 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:codeFocus.showPanel"
+    "onCommand:codeFocus.showPanel",
+    "onCommand:codeFocus.reloadFromActiveEditor"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -21,6 +30,10 @@
       {
         "command": "codeFocus.showPanel",
         "title": "Code Focus: Show Panel"
+      },
+      {
+        "command": "codeFocus.reloadFromActiveEditor",
+        "title": "Code Focus: Reload From Active Editor"
       }
     ]
   },
