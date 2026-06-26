@@ -53,7 +53,7 @@ export function getNextProjectFile(projectFiles: string[], activeRelativePath: s
 
   const activeIndex = projectFiles.indexOf(activeRelativePath);
   if (activeIndex < 0) {
-    return projectFiles[0];
+    return undefined;
   }
 
   return projectFiles[activeIndex + 1];

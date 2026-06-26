@@ -24,6 +24,7 @@ export interface CodePresenterHtmlInput {
   lastLine: number;
   lines: CodePresenterLine[];
   projectFiles?: string[];
+  projectFilesLoading?: boolean;
   wrapColumn?: number;
 }
 
@@ -33,6 +34,8 @@ const BLANK_PREFIX = 'BR>';
 const SPACE_PREFIX = 'S';
 const TAB_VISIBLE_WIDTH = 2;
 const WRAP_EDGE_GUARD_COLUMNS = 4;
+const MAX_RENDERED_TREE_FILES = 240;
+const TREE_ACTIVE_CONTEXT_FILES = 120;
 
 function escapeHtml(value: string): string {
   return value
@@ -69,7 +72,7 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
   const openedFile = escapeHtml(displayPath.openedFile);
   const lineRange = `${input.firstLine}-${input.lastLine}`;
   const rows = renderRows(input.lines, input.wrapColumn ?? DEFAULT_WRAP_COLUMN);
-  const fileTree = renderProjectFileTree(input.projectFiles ?? [], activeRelativePath);
+  const fileTree = renderProjectFileTree(input.projectFiles ?? [], activeRelativePath, input.projectFilesLoading ?? false);
   const lines = rows.length > 0
     ? rows.map((row) => `
         <div class="code-line${row.wrapPrefix ? ' wrapped-continuation' : ''}">
@@ -409,13 +412,39 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
         activeFileButton?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         savePresenterState({ fileTreeScrollTop: fileTree.scrollTop, activeRelativePath, revealActiveFile: false });
       });
+      let pageScrollInFlight = false;
+      let spaceHeld = false;
+      let heldSpaceDirection = 'down';
+      const requestPageScroll = (direction) => {
+        if (pageScrollInFlight) {
+          return;
+        }
+        pageScrollInFlight = true;
+        savePresenterState({ fileTreeScrollTop: fileTree?.scrollTop || 0, activeRelativePath, revealActiveFile: true });
+        vscode?.postMessage({ type: 'pageScroll', direction });
+      };
+      window.addEventListener('message', (event) => {
+        if (event.data?.type !== 'pageScrollReady') {
+          return;
+        }
+        pageScrollInFlight = false;
+        if (spaceHeld) {
+          requestAnimationFrame(() => requestPageScroll(heldSpaceDirection));
+        }
+      });
       window.addEventListener('keydown', (event) => {
         if (event.code !== 'Space') {
           return;
         }
         event.preventDefault();
-        savePresenterState({ fileTreeScrollTop: fileTree?.scrollTop || 0, activeRelativePath, revealActiveFile: true });
-        vscode?.postMessage({ type: 'pageScroll', direction: event.shiftKey ? 'up' : 'down' });
+        spaceHeld = true;
+        heldSpaceDirection = event.shiftKey ? 'up' : 'down';
+        requestPageScroll(heldSpaceDirection);
+      });
+      window.addEventListener('keyup', (event) => {
+        if (event.code === 'Space') {
+          spaceHeld = false;
+        }
       });
       document.querySelector('.file-tree')?.addEventListener('click', (event) => {
         const fileButton = event.target.closest('[data-file-path]');
@@ -431,14 +460,26 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
 </html>`;
 }
 
-function renderProjectFileTree(projectFiles: string[], activeRelativePath: string): string {
+function renderProjectFileTree(projectFiles: string[], activeRelativePath: string, loading = false): string {
+  if (loading && projectFiles.length === 0) {
+    return '<div class="file-tree-directory">Loading project files…</div>';
+  }
   if (projectFiles.length === 0) {
     return '<div class="file-tree-directory">No workspace files</div>';
   }
 
+  const sortedFiles = [...projectFiles].sort(compareProjectFilePaths);
+  const windowed = windowProjectFiles(sortedFiles, activeRelativePath);
   const rendered: string[] = [];
+  if (windowed.wasWindowed) {
+    rendered.push(`<div class="file-tree-directory">Showing ${windowed.files.length} of ${sortedFiles.length} files around active file</div>`);
+    if (windowed.startIndex > 0) {
+      rendered.push(`<div class="file-tree-directory">… ${windowed.startIndex} earlier files hidden</div>`);
+    }
+  }
+
   const seenDirectories = new Set<string>();
-  for (const filePath of [...projectFiles].sort(compareProjectFilePaths)) {
+  for (const filePath of windowed.files) {
     const parts = filePath.split('/').filter(Boolean);
     const filename = parts.at(-1) ?? filePath;
     parts.slice(0, -1).forEach((directory, index) => {
@@ -458,7 +499,30 @@ function renderProjectFileTree(projectFiles: string[], activeRelativePath: strin
     rendered.push(`<button type="button" class="file-tree-file" data-file-path="${escapedPath}" style="padding-left: ${depth * 16 + 6}px"${current}>${escapedFilename}</button>`);
   }
 
+  if (windowed.wasWindowed && windowed.endIndex < sortedFiles.length) {
+    rendered.push(`<div class="file-tree-directory">… ${sortedFiles.length - windowed.endIndex} later files hidden</div>`);
+  }
+
   return rendered.join('');
+}
+
+function windowProjectFiles(projectFiles: string[], activeRelativePath: string): { files: string[]; startIndex: number; endIndex: number; wasWindowed: boolean } {
+  if (projectFiles.length <= MAX_RENDERED_TREE_FILES) {
+    return { files: projectFiles, startIndex: 0, endIndex: projectFiles.length, wasWindowed: false };
+  }
+
+  const activeIndex = projectFiles.indexOf(activeRelativePath);
+  const centerIndex = activeIndex >= 0 ? activeIndex : 0;
+  const halfWindow = Math.min(TREE_ACTIVE_CONTEXT_FILES, Math.floor(MAX_RENDERED_TREE_FILES / 2));
+  const maxStart = Math.max(0, projectFiles.length - MAX_RENDERED_TREE_FILES);
+  const startIndex = Math.max(0, Math.min(maxStart, centerIndex - halfWindow));
+  const endIndex = Math.min(projectFiles.length, startIndex + MAX_RENDERED_TREE_FILES);
+  return {
+    files: projectFiles.slice(startIndex, endIndex),
+    startIndex,
+    endIndex,
+    wasWindowed: true,
+  };
 }
 
 export function selectRenderedLineWindow(

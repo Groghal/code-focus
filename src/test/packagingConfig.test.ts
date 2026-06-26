@@ -44,6 +44,10 @@ test('Code Focus package manifest fields map to implemented extension behavior',
   assert.equal(packageJson.activationEvents[0], `onCommand:${packageJson.contributes.commands[0].command}`);
   assert.equal(packageJson.activationEvents[1], `onCommand:${packageJson.contributes.commands[1].command}`);
   assert.match(extensionSource, /registerCommand\('codeFocus\.showPanel'/);
+  assert.match(extensionSource, /panel\.webview\.html = renderCodePresenterHtml\(\{[\s\S]*Loading Code Focus presenter/);
+  assert.match(extensionSource, /panel\.reveal\(vscode\.ViewColumn\.Beside\)/);
+  assert.match(extensionSource, /void refreshPanel\(context\)/);
+  assert.match(extensionSource, /function rememberPresentedEditor/);
   assert.match(extensionSource, /registerCommand\('codeFocus\.reloadFromActiveEditor'/);
 
   assert.equal(packageJson.contributes.configuration, undefined);
@@ -69,7 +73,20 @@ test('Code Focus package manifest fields map to implemented extension behavior',
 
   assert.equal(packageJson.engines.vscode, '^1.70.0');
   assert.equal(packageJson.devDependencies['@types/vscode'], '^1.70.0');
-  assert.doesNotMatch(extensionSource, /findFiles\([\s\S]*,\s*1000\s*\)/);
+  assert.doesNotMatch(extensionSource, /findFiles\(/);
+  assert.match(extensionSource, /readdir/);
+  assert.match(extensionSource, /PRUNED_PROJECT_TREE_DIRECTORIES/);
+  assert.match(extensionSource, /PROJECT_TREE_WALK_YIELD_INTERVAL/);
+  assert.match(extensionSource, /getCachedProjectFileTreeForCurrentDocument/);
+  assert.match(extensionSource, /isProjectFileTreeLoadingForCurrentDocument/);
+  assert.match(extensionSource, /projectFilesLoading/);
+  assert.match(extensionSource, /ensureProjectFileTreeLoading\(context\)/);
+  assert.match(extensionSource, /scheduleRefresh\(context\)/);
+  assert.match(extensionSource, /cachedProjectFilesWorkspacePath/);
+  assert.match(extensionSource, /cachedProjectFilesPromise/);
+  assert.match(extensionSource, /function invalidateProjectFileTree/);
+  assert.match(extensionSource, /onDidCreateFiles\(\(\) => invalidateProjectFileTree\(context\)\)/);
+  assert.match(extensionSource, /createFileSystemWatcher\('\*\*\/\.gitignore'\)/);
   assert.deepEqual(Object.keys(packageJson.dependencies), ['ignore']);
   assert.match(projectFilesSource, /import ignore = require\('ignore'\)/);
   assert.match(packageJson.scripts.build, /tsc -p \./);

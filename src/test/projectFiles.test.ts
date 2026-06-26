@@ -62,3 +62,9 @@ test('finds the next visible project file after the active file', () => {
   assert.equal(getNextProjectFile(files, 'src/b.ts'), undefined);
   assert.equal(getNextProjectFile(files, undefined), 'README.md');
 });
+
+test('does not wrap to the first file when the active path is missing from the cached project tree', () => {
+  const files = ['README.md', 'src/a.ts', 'src/b.ts'];
+
+  assert.equal(getNextProjectFile(files, 'src/missing.ts'), undefined);
+});

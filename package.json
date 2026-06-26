@@ -2,7 +2,7 @@
   "name": "code-focus",
   "displayName": "Code Focus",
   "description": "VS Code extension that improves code readability for humans with a focused presenter view.",
-  "version": "0.1.43",
+  "version": "0.1.51",
   "private": true,
   "publisher": "codefocus",
   "license": "MIT",

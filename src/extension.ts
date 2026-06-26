@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { readFile, readdir } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { normalizeRelativePath, type PathMetadata } from './metadata';
@@ -6,21 +7,26 @@ import { renderCodePresenterHtml, selectRenderedLineWindow, type CodePresenterLi
 import { filterProjectFilesByGitignore, getNextProjectFile } from './projectFiles';
 
 const REFRESH_DELAY_MS = 300;
-const PAGE_SCROLL_COOLDOWN_MS = 300;
+const PAGE_SCROLL_COOLDOWN_MS = 250;
+const PRUNED_PROJECT_TREE_DIRECTORIES = new Set(['.git', 'node_modules', '.venv', 'venv', 'dist', 'out', 'coverage', '.next']);
+const PROJECT_TREE_WALK_YIELD_INTERVAL = 500;
 
 let panel: vscode.WebviewPanel | undefined;
 let refreshTimer: NodeJS.Timeout | undefined;
 let refreshSequence = 0;
 let lastTextEditor: vscode.TextEditor | undefined;
 let presentedDocument: vscode.TextDocument | undefined;
+let presentedFileUri: vscode.Uri | undefined;
+let presentedFileText: string | undefined;
 let presentedWorkspaceFolder: vscode.WorkspaceFolder | undefined;
 let presenterTopLine = 0;
 let presenterVisibleLineCount = 19;
 let presenterWrapColumn = 68;
 let cachedProjectFiles: string[] = [];
+let cachedProjectFilesWorkspacePath: string | undefined;
+let cachedProjectFilesPromise: Promise<string[]> | undefined;
 let pageScrollCooldownTimer: NodeJS.Timeout | undefined;
 let pageScrollInProgress = false;
-let pendingPageScrollDirection: 'down' | 'up' | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   rememberTextEditor(vscode.window.activeTextEditor);
@@ -39,6 +45,16 @@ export function activate(context: vscode.ExtensionContext): void {
       void presentTextEditor(context, event.textEditor, { showWarning: false });
     }),
     vscode.workspace.onDidChangeTextDocument(() => scheduleRefresh(context)),
+    vscode.workspace.onDidCreateFiles(() => invalidateProjectFileTree(context)),
+    vscode.workspace.onDidDeleteFiles(() => invalidateProjectFileTree(context)),
+    vscode.workspace.onDidRenameFiles(() => invalidateProjectFileTree(context)),
+  );
+  const gitignoreWatcher = vscode.workspace.createFileSystemWatcher('**/.gitignore');
+  context.subscriptions.push(
+    gitignoreWatcher,
+    gitignoreWatcher.onDidChange(() => invalidateProjectFileTree(context)),
+    gitignoreWatcher.onDidCreate(() => invalidateProjectFileTree(context)),
+    gitignoreWatcher.onDidDelete(() => invalidateProjectFileTree(context)),
   );
 }
 
@@ -47,7 +63,6 @@ export function deactivate(): void {
 }
 
 async function showPanel(context: vscode.ExtensionContext): Promise<void> {
-  await presentTextEditor(context, vscode.window.activeTextEditor, { showWarning: false });
   if (!panel) {
     panel = vscode.window.createWebviewPanel(
       'codeFocusPresenterPanel',
@@ -55,6 +70,12 @@ async function showPanel(context: vscode.ExtensionContext): Promise<void> {
       vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true },
     );
+    panel.webview.html = renderCodePresenterHtml({
+      fullPath: 'Loading Code Focus presenter…',
+      firstLine: 0,
+      lastLine: 0,
+      lines: [],
+    });
 
     panel.webview.onDidReceiveMessage((message: { type?: string; direction?: string; path?: string; visibleLineCount?: number; wrapColumn?: number }) => {
       if (message.type === 'pageScroll') {
@@ -71,9 +92,16 @@ async function showPanel(context: vscode.ExtensionContext): Promise<void> {
       clearRefreshTimer();
       clearPageScrollCooldownTimer();
     });
+  } else {
+    panel.reveal(vscode.ViewColumn.Beside);
   }
 
-  await refreshPanel(context);
+  const activeEditor = vscode.window.activeTextEditor;
+  if (activeEditor?.document.uri.scheme === 'file') {
+    rememberPresentedEditor(activeEditor);
+    clearRefreshTimer();
+  }
+  void refreshPanel(context);
   vscode.window.showInformationMessage('Code Focus presenter started. Use this webview for a focused human-readable code view.');
 }
 
@@ -96,14 +124,20 @@ async function presentTextEditor(
     return false;
   }
 
-  lastTextEditor = editor;
-  presentedDocument = editor.document;
-  presentedWorkspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-  presenterTopLine = getEditorTopLine(editor);
-  presenterVisibleLineCount = getEditorVisibleLineCount(editor);
+  rememberPresentedEditor(editor);
   clearRefreshTimer();
   await refreshPanel(context);
   return true;
+}
+
+function rememberPresentedEditor(editor: vscode.TextEditor): void {
+  lastTextEditor = editor;
+  presentedDocument = editor.document;
+  presentedFileUri = undefined;
+  presentedFileText = undefined;
+  presentedWorkspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+  presenterTopLine = getEditorTopLine(editor);
+  presenterVisibleLineCount = getEditorVisibleLineCount(editor);
 }
 
 function closePanel(): void {
@@ -115,7 +149,6 @@ function closePanel(): void {
 
 function schedulePacedPageScroll(context: vscode.ExtensionContext, direction: 'down' | 'up'): void {
   if (pageScrollCooldownTimer || pageScrollInProgress) {
-    pendingPageScrollDirection = direction;
     return;
   }
   void runPacedPageScroll(context, direction);
@@ -125,25 +158,21 @@ async function runPacedPageScroll(context: vscode.ExtensionContext, direction: '
   pageScrollInProgress = true;
   pageScrollCooldownTimer = setTimeout(() => {
     pageScrollCooldownTimer = undefined;
-    flushPendingPageScroll(context);
+    notifyPageScrollReadyWhenIdle();
   }, PAGE_SCROLL_COOLDOWN_MS);
   try {
     await scrollByScreen(context, direction);
   } finally {
     pageScrollInProgress = false;
-    flushPendingPageScroll(context);
+    notifyPageScrollReadyWhenIdle();
   }
 }
 
-function flushPendingPageScroll(context: vscode.ExtensionContext): void {
+function notifyPageScrollReadyWhenIdle(): void {
   if (pageScrollCooldownTimer || pageScrollInProgress) {
     return;
   }
-  const nextDirection = pendingPageScrollDirection;
-  pendingPageScrollDirection = undefined;
-  if (nextDirection) {
-    void runPacedPageScroll(context, nextDirection);
-  }
+  void panel?.webview.postMessage({ type: 'pageScrollReady' });
 }
 
 function clearPageScrollCooldownTimer(): void {
@@ -152,7 +181,6 @@ function clearPageScrollCooldownTimer(): void {
     pageScrollCooldownTimer = undefined;
   }
   pageScrollInProgress = false;
-  pendingPageScrollDirection = undefined;
 }
 
 function rememberPresenterViewportMetrics(
@@ -189,8 +217,18 @@ async function openPresenterFile(context: vscode.ExtensionContext, relativeFileP
     return;
   }
 
-  const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path.join(workspaceFolder.uri.fsPath, ...relativeFilePath.split('/'))));
-  presentedDocument = document;
+  const fileUri = vscode.Uri.file(path.join(workspaceFolder.uri.fsPath, ...relativeFilePath.split('/')));
+  let fileText: string;
+  try {
+    fileText = await readFile(fileUri.fsPath, 'utf8');
+  } catch {
+    vscode.window.showWarningMessage(`Code Focus: cannot read ${relativeFilePath}.`);
+    return;
+  }
+
+  presentedDocument = undefined;
+  presentedFileUri = fileUri;
+  presentedFileText = fileText;
   presentedWorkspaceFolder = workspaceFolder;
   presenterTopLine = 0;
   clearRefreshTimer();
@@ -207,18 +245,21 @@ function getCurrentWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
 }
 
 async function scrollByScreen(context: vscode.ExtensionContext, direction: 'down' | 'up'): Promise<void> {
-  const document = presentedDocument ?? lastTextEditor?.document;
-  if (!document || document.uri.scheme !== 'file') {
+  const text = getPresentedText();
+  if (text === undefined) {
     vscode.window.showWarningMessage('Code Focus: open a text file before using presenter page scroll.');
     return;
   }
 
-  if (!presentedDocument) {
-    presentedDocument = document;
-    presentedWorkspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+  if (!presentedDocument && !presentedFileUri) {
+    const document = lastTextEditor?.document;
+    if (document?.uri.scheme === 'file') {
+      presentedDocument = document;
+      presentedWorkspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+    }
   }
 
-  const allLines = buildAllCodeLines(document);
+  const allLines = buildAllCodeLinesFromText(text);
   const currentWindow = selectRenderedLineWindow(allLines, presenterTopLine, presenterVisibleLineCount, presenterWrapColumn);
 
   if (direction === 'down' && currentWindow.nextTopLine >= allLines.length) {
@@ -298,7 +339,7 @@ function getEditorVisibleLineCount(editor: vscode.TextEditor): number {
   return Math.max(1, visibleRange.end.line - visibleRange.start.line + 1);
 }
 
-async function refreshPanel(_context: vscode.ExtensionContext): Promise<void> {
+async function refreshPanel(context: vscode.ExtensionContext): Promise<void> {
   if (!panel) {
     return;
   }
@@ -322,7 +363,9 @@ async function refreshPanel(_context: vscode.ExtensionContext): Promise<void> {
     return;
   }
   const codeLines = buildVisibleCodeLines();
-  const projectFiles = await buildProjectFileTree();
+  const projectFiles = getCachedProjectFileTreeForCurrentDocument();
+  ensureProjectFileTreeLoading(context);
+  const projectFilesLoading = isProjectFileTreeLoadingForCurrentDocument();
   if (sequence !== refreshSequence || !panel) {
     return;
   }
@@ -333,37 +376,127 @@ async function refreshPanel(_context: vscode.ExtensionContext): Promise<void> {
     lastLine: metadata.lastVisibleLine,
     lines: codeLines,
     projectFiles,
+    projectFilesLoading,
     wrapColumn: presenterWrapColumn,
   });
 }
 
 function buildFullPath(): string {
-  const document = presentedDocument ?? lastTextEditor?.document;
-  return document?.uri.scheme === 'file' ? document.uri.fsPath : '';
+  const fileUri = getPresentedFileUri();
+  return fileUri?.fsPath ?? '';
 }
 
-async function buildProjectFileTree(): Promise<string[]> {
-  const document = presentedDocument ?? lastTextEditor?.document;
-  if (!document || document.uri.scheme !== 'file') {
+function getCachedProjectFileTreeForCurrentDocument(): string[] {
+  const fileUri = getPresentedFileUri();
+  if (!fileUri) {
     cachedProjectFiles = [];
+    cachedProjectFilesWorkspacePath = undefined;
+    cachedProjectFilesPromise = undefined;
     return [];
   }
 
-  const workspaceFolder = presentedWorkspaceFolder ?? vscode.workspace.getWorkspaceFolder(document.uri);
+  const workspaceFolder = presentedWorkspaceFolder ?? vscode.workspace.getWorkspaceFolder(fileUri);
   if (!workspaceFolder) {
-    const onlyFile = normalizeRelativePath(document.uri.fsPath, undefined);
+    const onlyFile = normalizeRelativePath(fileUri.fsPath, undefined);
     cachedProjectFiles = [onlyFile];
+    cachedProjectFilesWorkspacePath = undefined;
+    cachedProjectFilesPromise = undefined;
     return cachedProjectFiles;
   }
 
-  const files = await vscode.workspace.findFiles(
-    new vscode.RelativePattern(workspaceFolder, '**/*'),
-    new vscode.RelativePattern(workspaceFolder, '**/{.git,node_modules,.venv,venv,dist,out,coverage,.next}/**'),
-  );
-  const relativeFiles = files.map((uri) => normalizeRelativePath(uri.fsPath, workspaceFolder.uri.fsPath));
+  return cachedProjectFilesWorkspacePath === workspaceFolder.uri.fsPath ? cachedProjectFiles : [];
+}
+
+function isProjectFileTreeLoadingForCurrentDocument(): boolean {
+  const fileUri = getPresentedFileUri();
+  if (!fileUri) {
+    return false;
+  }
+  const workspaceFolder = presentedWorkspaceFolder ?? vscode.workspace.getWorkspaceFolder(fileUri);
+  return Boolean(workspaceFolder && cachedProjectFilesWorkspacePath === workspaceFolder.uri.fsPath && cachedProjectFilesPromise);
+}
+
+function ensureProjectFileTreeLoading(context: vscode.ExtensionContext): void {
+  const fileUri = getPresentedFileUri();
+  if (!fileUri) {
+    return;
+  }
+  const workspaceFolder = presentedWorkspaceFolder ?? vscode.workspace.getWorkspaceFolder(fileUri);
+  if (!workspaceFolder) {
+    return;
+  }
+
+  const workspacePath = workspaceFolder.uri.fsPath;
+  if (cachedProjectFilesWorkspacePath === workspacePath && cachedProjectFiles.length > 0) {
+    return;
+  }
+  if (cachedProjectFilesWorkspacePath === workspacePath && cachedProjectFilesPromise) {
+    return;
+  }
+
+  cachedProjectFilesWorkspacePath = workspacePath;
+  cachedProjectFilesPromise = discoverProjectFiles(workspaceFolder).then((files) => {
+    if (cachedProjectFilesWorkspacePath === workspacePath) {
+      cachedProjectFiles = files;
+      cachedProjectFilesPromise = undefined;
+      scheduleRefresh(context);
+    }
+    return files;
+  }, (error) => {
+    if (cachedProjectFilesWorkspacePath === workspacePath) {
+      cachedProjectFilesPromise = undefined;
+    }
+    console.error('Code Focus: failed to collect project file tree', error);
+    return [];
+  });
+}
+
+async function discoverProjectFiles(workspaceFolder: vscode.WorkspaceFolder): Promise<string[]> {
+  const relativeFiles = await walkWorkspaceFiles(workspaceFolder.uri.fsPath);
   const gitignoreText = await readWorkspaceGitignore(workspaceFolder);
-  cachedProjectFiles = filterProjectFilesByGitignore(relativeFiles, gitignoreText);
-  return cachedProjectFiles;
+  return filterProjectFilesByGitignore(relativeFiles, gitignoreText);
+}
+
+async function walkWorkspaceFiles(workspaceRoot: string): Promise<string[]> {
+  const files: string[] = [];
+  let visited = 0;
+
+  async function walkDirectory(directoryPath: string, relativeDirectory = ''): Promise<void> {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(directoryPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (PRUNED_PROJECT_TREE_DIRECTORIES.has(entry.name)) {
+          continue;
+        }
+        await walkDirectory(path.join(directoryPath, entry.name), relativePath);
+      } else if (entry.isFile()) {
+        files.push(relativePath);
+      }
+      visited += 1;
+      if (visited % PROJECT_TREE_WALK_YIELD_INTERVAL === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+  }
+
+  await walkDirectory(workspaceRoot);
+  return files;
+}
+
+function invalidateProjectFileTree(context: vscode.ExtensionContext): void {
+  cachedProjectFiles = [];
+  cachedProjectFilesWorkspacePath = undefined;
+  cachedProjectFilesPromise = undefined;
+  scheduleRefresh(context);
 }
 
 async function readWorkspaceGitignore(workspaceFolder: vscode.WorkspaceFolder): Promise<string> {
@@ -375,17 +508,33 @@ async function readWorkspaceGitignore(workspaceFolder: vscode.WorkspaceFolder): 
 }
 
 function buildVisibleCodeLines(): CodePresenterLine[] {
-  const document = presentedDocument ?? lastTextEditor?.document;
-  if (!document || document.uri.scheme !== 'file') {
+  const text = getPresentedText();
+  if (text === undefined) {
     return [];
   }
 
-  return buildRenderedWindow(document).lines;
+  return buildRenderedWindowFromText(text).lines;
 }
 
-function buildRenderedWindow(document: vscode.TextDocument): RenderedLineWindow {
+function getPresentedText(): string | undefined {
+  if (presentedFileText !== undefined) {
+    return presentedFileText;
+  }
+  const document = presentedDocument ?? lastTextEditor?.document;
+  return document?.uri.scheme === 'file' ? document.getText() : undefined;
+}
+
+function getPresentedFileUri(): vscode.Uri | undefined {
+  if (presentedFileUri) {
+    return presentedFileUri;
+  }
+  const document = presentedDocument ?? lastTextEditor?.document;
+  return document?.uri.scheme === 'file' ? document.uri : undefined;
+}
+
+function buildRenderedWindowFromText(text: string): RenderedLineWindow {
   return selectRenderedLineWindow(
-    buildAllCodeLines(document),
+    buildAllCodeLinesFromText(text),
     presenterTopLine,
     presenterVisibleLineCount,
     presenterWrapColumn,
@@ -393,21 +542,26 @@ function buildRenderedWindow(document: vscode.TextDocument): RenderedLineWindow 
 }
 
 function buildAllCodeLines(document: vscode.TextDocument): CodePresenterLine[] {
-  return document.getText().split(/\r?\n/).map((text, index) => ({
+  return buildAllCodeLinesFromText(document.getText());
+}
+
+function buildAllCodeLinesFromText(text: string): CodePresenterLine[] {
+  return text.split(/\r?\n/).map((lineText, index) => ({
     number: index + 1,
-    text,
+    text: lineText,
   }));
 }
 
 function buildCurrentMetadata(): PathMetadata | undefined {
-  const document = presentedDocument ?? lastTextEditor?.document;
-  if (!document || document.uri.scheme !== 'file') {
+  const fileUri = getPresentedFileUri();
+  const text = getPresentedText();
+  if (!fileUri || text === undefined) {
     return undefined;
   }
 
-  const workspaceFolder = presentedWorkspaceFolder ?? vscode.workspace.getWorkspaceFolder(document.uri);
-  const relativePath = normalizeRelativePath(document.uri.fsPath, workspaceFolder?.uri.fsPath);
-  const renderedWindow = buildRenderedWindow(document);
+  const workspaceFolder = presentedWorkspaceFolder ?? vscode.workspace.getWorkspaceFolder(fileUri);
+  const relativePath = normalizeRelativePath(fileUri.fsPath, workspaceFolder?.uri.fsPath);
+  const renderedWindow = buildRenderedWindowFromText(text);
   return {
     version: 1,
     path: relativePath,

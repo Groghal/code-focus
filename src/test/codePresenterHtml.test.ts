@@ -218,6 +218,21 @@ test('renders a clickable, scrollable hierarchical project file tree with the ac
   assert.match(html, /aria-current="true">index\.ts/);
 });
 
+test('shows project file loading state while the tree is collected asynchronously', () => {
+  const html = renderCodePresenterHtml({
+    fullPath: '/home/grog/projects/demo/src/index.ts',
+    activeRelativePath: 'src/index.ts',
+    firstLine: 1,
+    lastLine: 1,
+    lines: [{ number: 1, text: 'export const answer = 42;' }],
+    projectFiles: [],
+    projectFilesLoading: true,
+  });
+
+  assert.match(html, /Loading project files…/);
+  assert.doesNotMatch(html, /No workspace files/);
+});
+
 test('reserves stable OCR header rows for the opened root and long relative file path', () => {
   const longPath = 'src/features/super-long-component-name-that-used-to-be-cropped-in-the-presenter-view.tsx';
   const html = renderCodePresenterHtml({
@@ -253,6 +268,25 @@ test('reveals the active file when the presenter active path changes while prese
   assert.match(html, /!presenterState\.revealActiveFile && !activeFileChanged/);
   assert.match(html, /fileTree\.scrollTop = presenterState\.fileTreeScrollTop/);
   assert.match(html, /activeFileButton\?\.scrollIntoView/);
+});
+
+test('windows very large project file trees around the active file for fast presenter refreshes', () => {
+  const projectFiles = Array.from({ length: 1000 }, (_value, index) => `src/file-${String(index).padStart(4, '0')}.ts`);
+  const html = renderCodePresenterHtml({
+    fullPath: '/home/grog/projects/demo/src/file-0500.ts',
+    activeRelativePath: 'src/file-0500.ts',
+    firstLine: 1,
+    lastLine: 1,
+    lines: [{ number: 1, text: 'export const active = true;' }],
+    projectFiles,
+  });
+
+  assert.match(html, /Showing 240 of 1000 files around active file/);
+  assert.match(html, /earlier files hidden/);
+  assert.match(html, /later files hidden/);
+  assert.match(html, /data-file-path="src\/file-0500\.ts"[^>]*aria-current="true"/);
+  assert.doesNotMatch(html, /data-file-path="src\/file-0000\.ts"/);
+  assert.doesNotMatch(html, /data-file-path="src\/file-0999\.ts"/);
 });
 
 test('sorts presenter file tree deterministically before rendering', () => {
@@ -292,10 +326,10 @@ test('locks code scrolling while allowing the file tree to scroll and Space to p
   assert.match(html, /event\.preventDefault\(\)/);
   assert.match(html, /event\.target\.closest\('\.file-tree'\)/);
   assert.match(html, /event\.code !== 'Space'/);
-  assert.match(html, /postMessage\(\{ type: 'pageScroll', direction: event\.shiftKey \? 'up' : 'down' \}\)/);
+  assert.match(html, /requestPageScroll\(heldSpaceDirection\)/);
 });
 
-test('allows held Space repeats to reach the host cooldown gate', () => {
+test('paces held Space with one in-flight page request and host acknowledgements', () => {
   const html = renderCodePresenterHtml({
     fullPath: '/home/grog/projects/demo/src/index.ts',
     firstLine: 1,
@@ -305,8 +339,13 @@ test('allows held Space repeats to reach the host cooldown gate', () => {
 
   assert.doesNotMatch(html, /PAGE_REPEAT_DELAY_MS/);
   assert.doesNotMatch(html, /lastPageScrollAt/);
-  assert.doesNotMatch(html, /if \(event\.repeat\) \{/);
-  assert.match(html, /event\.preventDefault\(\);[\s\S]*savePresenterState\(\{[\s\S]*revealActiveFile: true[\s\S]*vscode\?\.postMessage\(\{ type: 'pageScroll', direction: event\.shiftKey \? 'up' : 'down' \}\)/);
+  assert.match(html, /let pageScrollInFlight = false;/);
+  assert.match(html, /let spaceHeld = false;/);
+  assert.match(html, /if \(pageScrollInFlight\) \{\s*return;\s*\}/);
+  assert.match(html, /pageScrollInFlight = true;[\s\S]*vscode\?\.postMessage\(\{ type: 'pageScroll', direction \}\)/);
+  assert.match(html, /event\.data\?\.type !== 'pageScrollReady'/);
+  assert.match(html, /pageScrollInFlight = false;[\s\S]*if \(spaceHeld\) \{[\s\S]*requestAnimationFrame\(\(\) => requestPageScroll\(heldSpaceDirection\)\)/);
+  assert.match(html, /addEventListener\('keyup'[\s\S]*spaceHeld = false/);
 });
 
 test('reports measured presenter viewport line and wrap capacity back to the extension host', () => {
