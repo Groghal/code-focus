@@ -339,12 +339,15 @@ test('paces held Space with one in-flight page request and host acknowledgements
 
   assert.doesNotMatch(html, /PAGE_REPEAT_DELAY_MS/);
   assert.doesNotMatch(html, /lastPageScrollAt/);
-  assert.match(html, /let pageScrollInFlight = false;/);
-  assert.match(html, /let spaceHeld = false;/);
-  assert.match(html, /if \(pageScrollInFlight\) \{\s*return;\s*\}/);
-  assert.match(html, /pageScrollInFlight = true;[\s\S]*vscode\?\.postMessage\(\{ type: 'pageScroll', direction \}\)/);
+  assert.match(html, /let pageScrollInFlight = Boolean\(presenterState\.pageScrollInFlight\);/);
+  assert.match(html, /let spaceHeld = Boolean\(presenterState\.spaceHeld\);/);
+  assert.match(html, /const PAGE_SCROLL_REPEAT_DELAY_MS = 250;/);
+  assert.match(html, /if \(pageScrollInFlight \|\| now < nextPageScrollAt\) \{/);
+  assert.match(html, /savePresenterState\(\{ pageScrollInFlight, spaceHeld, heldSpaceDirection, nextPageScrollAt, requestedScrollSequence \}\)/);
+  assert.match(html, /pageScrollInFlight = true;[\s\S]*vscode\?\.postMessage\(\{ type: 'pageScroll', direction, scrollSequence: requestedScrollSequence \}\)/);
   assert.match(html, /event\.data\?\.type !== 'pageScrollReady'/);
-  assert.match(html, /pageScrollInFlight = false;[\s\S]*if \(spaceHeld\) \{[\s\S]*requestAnimationFrame\(\(\) => requestPageScroll\(heldSpaceDirection\)\)/);
+  assert.match(html, /pageScrollInFlight = false;[\s\S]*rememberPageScrollState\(\);/);
+  assert.match(html, /if \(spaceHeld\) \{[\s\S]*setTimeout\(\(\) => requestPageScroll\(heldSpaceDirection\), delayMs\)/);
   assert.match(html, /addEventListener\('keyup'[\s\S]*spaceHeld = false/);
 });
 

@@ -412,24 +412,40 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
         activeFileButton?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         savePresenterState({ fileTreeScrollTop: fileTree.scrollTop, activeRelativePath, revealActiveFile: false });
       });
-      let pageScrollInFlight = false;
-      let spaceHeld = false;
-      let heldSpaceDirection = 'down';
+      const PAGE_SCROLL_REPEAT_DELAY_MS = 250;
+      let pageScrollInFlight = Boolean(presenterState.pageScrollInFlight);
+      let spaceHeld = Boolean(presenterState.spaceHeld);
+      let heldSpaceDirection = presenterState.heldSpaceDirection === 'up' ? 'up' : 'down';
+      let nextPageScrollAt = Number.isFinite(presenterState.nextPageScrollAt) ? presenterState.nextPageScrollAt : 0;
+      let requestedScrollSequence = Number.isFinite(presenterState.requestedScrollSequence) ? presenterState.requestedScrollSequence : 0;
+      const rememberPageScrollState = () => {
+        savePresenterState({ pageScrollInFlight, spaceHeld, heldSpaceDirection, nextPageScrollAt, requestedScrollSequence });
+      };
       const requestPageScroll = (direction) => {
-        if (pageScrollInFlight) {
+        const now = Date.now();
+        if (pageScrollInFlight || now < nextPageScrollAt) {
           return;
         }
         pageScrollInFlight = true;
+        heldSpaceDirection = direction;
+        nextPageScrollAt = now + PAGE_SCROLL_REPEAT_DELAY_MS;
+        requestedScrollSequence += 1;
         savePresenterState({ fileTreeScrollTop: fileTree?.scrollTop || 0, activeRelativePath, revealActiveFile: true });
-        vscode?.postMessage({ type: 'pageScroll', direction });
+        rememberPageScrollState();
+        vscode?.postMessage({ type: 'pageScroll', direction, scrollSequence: requestedScrollSequence });
       };
       window.addEventListener('message', (event) => {
         if (event.data?.type !== 'pageScrollReady') {
           return;
         }
+        if (Number.isFinite(event.data.scrollSequence) && event.data.scrollSequence !== requestedScrollSequence) {
+          return;
+        }
         pageScrollInFlight = false;
+        rememberPageScrollState();
         if (spaceHeld) {
-          requestAnimationFrame(() => requestPageScroll(heldSpaceDirection));
+          const delayMs = Math.max(0, nextPageScrollAt - Date.now());
+          setTimeout(() => requestPageScroll(heldSpaceDirection), delayMs);
         }
       });
       window.addEventListener('keydown', (event) => {
@@ -439,11 +455,13 @@ export function renderCodePresenterHtml(input: CodePresenterHtmlInput): string {
         event.preventDefault();
         spaceHeld = true;
         heldSpaceDirection = event.shiftKey ? 'up' : 'down';
+        rememberPageScrollState();
         requestPageScroll(heldSpaceDirection);
       });
       window.addEventListener('keyup', (event) => {
         if (event.code === 'Space') {
           spaceHeld = false;
+          rememberPageScrollState();
         }
       });
       document.querySelector('.file-tree')?.addEventListener('click', (event) => {

@@ -27,6 +27,7 @@ let cachedProjectFilesWorkspacePath: string | undefined;
 let cachedProjectFilesPromise: Promise<string[]> | undefined;
 let pageScrollCooldownTimer: NodeJS.Timeout | undefined;
 let pageScrollInProgress = false;
+let pageScrollSequence = 0;
 
 export function activate(context: vscode.ExtensionContext): void {
   rememberTextEditor(vscode.window.activeTextEditor);
@@ -155,24 +156,28 @@ function schedulePacedPageScroll(context: vscode.ExtensionContext, direction: 'd
 }
 
 async function runPacedPageScroll(context: vscode.ExtensionContext, direction: 'down' | 'up'): Promise<void> {
+  const scrollSequence = ++pageScrollSequence;
   pageScrollInProgress = true;
   pageScrollCooldownTimer = setTimeout(() => {
     pageScrollCooldownTimer = undefined;
-    notifyPageScrollReadyWhenIdle();
+    notifyPageScrollReadyWhenIdle(scrollSequence);
   }, PAGE_SCROLL_COOLDOWN_MS);
   try {
     await scrollByScreen(context, direction);
   } finally {
     pageScrollInProgress = false;
-    notifyPageScrollReadyWhenIdle();
+    notifyPageScrollReadyWhenIdle(scrollSequence);
   }
 }
 
-function notifyPageScrollReadyWhenIdle(): void {
+function notifyPageScrollReadyWhenIdle(scrollSequence: number): void {
+  if (scrollSequence !== pageScrollSequence) {
+    return;
+  }
   if (pageScrollCooldownTimer || pageScrollInProgress) {
     return;
   }
-  void panel?.webview.postMessage({ type: 'pageScrollReady' });
+  void panel?.webview.postMessage({ type: 'pageScrollReady', scrollSequence });
 }
 
 function clearPageScrollCooldownTimer(): void {
@@ -181,6 +186,7 @@ function clearPageScrollCooldownTimer(): void {
     pageScrollCooldownTimer = undefined;
   }
   pageScrollInProgress = false;
+  pageScrollSequence += 1;
 }
 
 function rememberPresenterViewportMetrics(

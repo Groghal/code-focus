@@ -38,17 +38,20 @@ test('presenter page scrolling advances by complete rendered-row windows with no
   doesNotMatch(extensionSource, /visibleLineCount - 1/);
 });
 
-test('extension host acknowledges page scroll only after cooldown and rendering are idle', () => {
+test('extension host acknowledges page scroll only after 250ms cooldown and ignores stale ready acks', () => {
   match(extensionSource, /const PAGE_SCROLL_COOLDOWN_MS = 250;/);
   match(extensionSource, /let pageScrollCooldownTimer: NodeJS\.Timeout \| undefined;/);
   match(extensionSource, /let pageScrollInProgress = false;/);
+  match(extensionSource, /let pageScrollSequence = 0;/);
   doesNotMatch(extensionSource, /pendingPageScrollDirection/);
   match(extensionSource, /function schedulePacedPageScroll\(context: vscode\.ExtensionContext, direction: 'down' \| 'up'\): void/);
   match(extensionSource, /if \(pageScrollCooldownTimer \|\| pageScrollInProgress\) \{\s*return;\s*\}/);
   match(extensionSource, /void runPacedPageScroll\(context, direction\);/);
-  match(extensionSource, /pageScrollInProgress = true;[\s\S]*pageScrollCooldownTimer = setTimeout\([\s\S]*notifyPageScrollReadyWhenIdle\(\);[\s\S]*await scrollByScreen\(context, direction\);/);
-  match(extensionSource, /function notifyPageScrollReadyWhenIdle\(\): void/);
-  match(extensionSource, /panel\?\.webview\.postMessage\(\{ type: 'pageScrollReady' \}\)/);
+  match(extensionSource, /const scrollSequence = \+\+pageScrollSequence;/);
+  match(extensionSource, /pageScrollInProgress = true;[\s\S]*pageScrollCooldownTimer = setTimeout\([\s\S]*notifyPageScrollReadyWhenIdle\(scrollSequence\);[\s\S]*await scrollByScreen\(context, direction\);/);
+  match(extensionSource, /function notifyPageScrollReadyWhenIdle\(scrollSequence: number\): void/);
+  match(extensionSource, /if \(scrollSequence !== pageScrollSequence\) \{/);
+  match(extensionSource, /panel\?\.webview\.postMessage\(\{ type: 'pageScrollReady', scrollSequence \}\)/);
   doesNotMatch(extensionSource, /function flushPendingPageScroll/);
   doesNotMatch(extensionSource, /const nextDirection = pendingPageScrollDirection/);
   doesNotMatch(extensionSource, /function tryLockPageScroll/);
